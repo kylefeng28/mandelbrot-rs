@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-skia-safe = "0.93.1"
+skia-safe = { version = "0.93.1", features = ["gl"] }
+winit = "0.30.13"
+gl = "0.14.0"
+glutin = "0.32.3"
+glutin-winit = "0.5.0"
