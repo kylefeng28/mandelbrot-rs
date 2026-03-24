@@ -83,7 +83,6 @@ impl ApplicationHandler for Application {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        let mut draw_frame = false;
         let frame_start = Instant::now();
 
         match event {
@@ -119,7 +118,7 @@ impl ApplicationHandler for Application {
                 self.env.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                // draw_frame = true;
+                self.draw();
             }
             _ => (),
         }
@@ -128,20 +127,7 @@ impl ApplicationHandler for Application {
         let frame_duration = Duration::from_secs_f32(expected_frame_length_seconds);
 
         if frame_start - self.previous_frame_start > frame_duration {
-            draw_frame = true;
             self.previous_frame_start = frame_start;
-        }
-        if draw_frame {
-            let canvas = self.env.surface.canvas();
-            canvas.clear(Color::WHITE);
-            let size = self.env.window.inner_size();
-            let bounds = skia_safe::Rect::from_wh(size.width as f32, size.height as f32);
-            self.renderer.render(canvas, bounds);
-            self.env.gr_context.flush_and_submit();
-            self.env
-                .gl_surface
-                .swap_buffers(&self.env.gl_context)
-                .unwrap();
         }
 
         event_loop.set_control_flow(ControlFlow::WaitUntil(
@@ -149,6 +135,21 @@ impl ApplicationHandler for Application {
         ));
     }
 
+}
+
+impl Application {
+    fn draw(&mut self) {
+        let canvas = self.env.surface.canvas();
+        canvas.clear(Color::WHITE);
+        let size = self.env.window.inner_size();
+        let bounds = skia_safe::Rect::from_wh(size.width as f32, size.height as f32);
+        self.renderer.render(canvas, bounds);
+        self.env.gr_context.flush_and_submit();
+        self.env
+            .gl_surface
+            .swap_buffers(&self.env.gl_context)
+            .unwrap();
+    }
 }
 
 fn create_surface(
