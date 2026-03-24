@@ -1,6 +1,6 @@
 use super::Renderer;
 use skia_safe::{AlphaType, Canvas, ColorType, Data, ImageInfo, Rect};
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, WindowEvent, MouseButton, MouseScrollDelta};
 use winit::keyboard::{Key, NamedKey};
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +22,13 @@ struct SharedBuffer {
     done: bool,
 }
 
+enum DragState {
+    None,
+    /// State indicating the left mouse button is currently held for dragging
+    /// Holds coordinates of the last processed cursor coordiantes (in pixels)
+    Dragging(f64, f64),
+}
+
 /// Interactive Mandelbrot set renderer
 /// Supports panning with arrow keys and zooming with +/-
 /// Computation runs on a background thread so the main loop stays responsive
@@ -39,6 +46,9 @@ pub struct MandelbrotRenderer {
     buffer: Arc<RwLock<SharedBuffer>>,
     /// Set to true to signal the compute thread to stop early
     cancel: Arc<AtomicBool>,
+
+    drag_state: DragState,
+    cursor_pos: (f64, f64),
 }
 
 impl MandelbrotRenderer {
@@ -59,6 +69,8 @@ impl MandelbrotRenderer {
                 done: true,
             })),
             cancel: Arc::new(AtomicBool::new(false)),
+            drag_state: DragState::None,
+            cursor_pos: (0.0, 0.0),
         }
     }
 
@@ -229,29 +241,71 @@ impl Renderer for MandelbrotRenderer {
     }
 
     fn handle_event(&mut self, event: &WindowEvent) {
-        if let WindowEvent::KeyboardInput { event, .. } = event {
-            if event.state != ElementState::Pressed {
-                return;
-            }
-            let pan_amount = self.scale * 0.1;
-            match &event.logical_key {
-                // Pan with arrow keys
-                Key::Named(NamedKey::ArrowLeft) =>  { self.center_re -= pan_amount; self.dirty = true; }
-                Key::Named(NamedKey::ArrowRight) => { self.center_re += pan_amount; self.dirty = true; }
-                Key::Named(NamedKey::ArrowUp) =>    { self.center_im += pan_amount; self.dirty = true; }
-                Key::Named(NamedKey::ArrowDown) =>  { self.center_im -= pan_amount; self.dirty = true; }
+        match event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state != ElementState::Pressed {
+                    return;
+                }
+                let pan_amount = self.scale * 0.1;
+                match &event.logical_key {
+                    // Pan with arrow keys
+                    Key::Named(NamedKey::ArrowLeft)  => { self.center_re -= pan_amount; self.dirty = true; }
+                    Key::Named(NamedKey::ArrowRight) => { self.center_re += pan_amount; self.dirty = true; }
+                    Key::Named(NamedKey::ArrowUp)    => { self.center_im += pan_amount; self.dirty = true; }
+                    Key::Named(NamedKey::ArrowDown)  => { self.center_im -= pan_amount; self.dirty = true; }
 
-                // Zoom with +/-
-                Key::Character(ch) if ch.as_str() == "=" || ch.as_str() == "+" => {
-                    self.scale *= 0.8;
-                    self.dirty = true;
+                    // Zoom with +/-
+                    Key::Character(ch) if ch.as_str() == "=" || ch.as_str() == "+" => {
+                        self.scale *= 0.8;
+                        self.dirty = true;
+                    }
+                    Key::Character(ch) if ch.as_str() == "-" => {
+                        self.scale *= 1.25;
+                        self.dirty = true;
+                    }
+                    _ => {}
                 }
-                Key::Character(ch) if ch.as_str() == "-" => {
-                    self.scale *= 1.25;
-                    self.dirty = true;
-                }
-                _ => {}
             }
+            // Drag to pan: mouse down starts drag
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                if *state == ElementState::Pressed {
+                    self.drag_state = DragState::Dragging(self.cursor_pos.0, self.cursor_pos.1)
+                } else {
+                    self.drag_state = DragState::None;
+                }
+            }
+            // Drag to pan: mouse move while drag_state
+            WindowEvent::CursorMoved { position, .. } => {
+                if let DragState::Dragging(drag_x, drag_y) = self.drag_state && self.width > 0 {
+                    let dx = position.x - drag_x;
+                    let dy = position.y - drag_y;
+
+                    // Convert pixel delta to complex plane delta
+                    let aspect = self.width as f64 / self.height.max(1) as f64;
+                    let pixels_per_unit_x = self.width as f64 / (2.0 * self.scale * aspect);
+                    let pixels_per_unit_y = self.height as f64 / (2.0 * self.scale);
+
+                    self.center_re -= dx / pixels_per_unit_x;
+                    self.center_im += dy / pixels_per_unit_y;
+                    self.dirty = true;
+
+                    self.drag_state = DragState::Dragging(position.x, position.y);
+                }
+
+                self.cursor_pos = (position.x, position.y);
+            }
+            // Scroll to zoom (centered on cursor position)
+            WindowEvent::MouseWheel { delta, .. } => {
+                let scroll_y = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y / 50.0,
+                };
+                // Zoom factor: scroll up zooms in, scroll down zooms out
+                let factor = if scroll_y > 0.0 { 0.9 } else { 1.0 / 0.9 };
+                self.scale *= factor;
+                self.dirty = true;
+            }
+            _ => {}
         }
     }
 }

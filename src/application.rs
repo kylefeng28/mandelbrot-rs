@@ -62,6 +62,7 @@ pub struct Application {
     stencil_size: usize,
     modifiers: Modifiers,
     previous_frame_start: Instant,
+    cursor_pos: (f32, f32),
 }
 
 impl ApplicationHandler for Application {
@@ -107,6 +108,14 @@ impl ApplicationHandler for Application {
                 self.renderer.resize(width.into(), height.into());
             }
             WindowEvent::ModifiersChanged(new_modifiers) => self.modifiers = new_modifiers,
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_pos = (position.x as f32, position.y as f32);
+                self.renderer.handle_event(&event);
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                self.renderer.handle_event(&event);
+                self.env.window.request_redraw();
+            }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { ref logical_key, state: ElementState::Pressed, .. },
                 ..
@@ -310,5 +319,6 @@ pub fn create_application(el: &EventLoop<()>, renderer: Box<dyn Renderer>) -> Ap
         stencil_size,
         modifiers: Modifiers::default(),
         previous_frame_start: Instant::now(),
+        cursor_pos: (0.0, 0.0),
     }
 }
