@@ -1,4 +1,5 @@
 pub mod icon_renderer;
+pub mod mandelbrot;
 
 use skia_safe::{Canvas, Rect};
 use winit::event::WindowEvent;
