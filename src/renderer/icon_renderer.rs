@@ -6,7 +6,7 @@
 #![allow(clippy::unusual_byte_groupings)]
 
 use super::Renderer;
-use winit::event::WindowEvent;
+use winit::event::{WindowEvent, KeyEvent, ElementState};
 use skia_safe::{
     gradient, Canvas, Color, Color4f, Matrix, Paint, PaintJoin, PaintStyle, PathBuilder, Point,
     Rect, TileMode,
@@ -37,8 +37,20 @@ impl Renderer for IconRenderer {
         canvas.restore();
     }
 
-    fn handle_event(&mut self, _event: &WindowEvent) {
-        self.frame = self.frame.saturating_sub(10)
+    fn handle_event(&mut self, event: &WindowEvent) {
+        use winit::keyboard::{Key, NamedKey};
+        match event {
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, ..
+            } => {
+                println!("{logical_key:?}");
+                match logical_key {
+                    Key::Named(NamedKey::Space) => self.frame = self.frame.saturating_add(10),
+                    _ => self.frame = self.frame.saturating_sub(10)
+                }
+            }
+            _ => {}
+        }
     }
 }
 
