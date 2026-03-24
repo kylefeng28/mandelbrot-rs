@@ -4,14 +4,43 @@
 // https://github.com/rust-skia/rust-skia/blob/master/skia-safe/examples/icon/renderer.rs
 #![allow(unknown_lints)]
 #![allow(clippy::unusual_byte_groupings)]
+
+use super::Renderer;
+use winit::event::WindowEvent;
 use skia_safe::{
-    gradient, Color, Color4f, Matrix, Paint, PaintJoin, PaintStyle, PathBuilder, Point, TileMode,
+    gradient, Canvas, Color, Color4f, Matrix, Paint, PaintJoin, PaintStyle, PathBuilder, Point,
+    Rect, TileMode,
 };
 use std::cmp::min;
 
 const PI: f32 = std::f32::consts::PI;
 const DEGREES_IN_RADIANS: f32 = PI / 180.0;
 const PEN_SIZE: f32 = 1.0;
+
+pub struct IconRenderer {
+    frame: usize,
+}
+
+impl IconRenderer {
+    pub fn new() -> Self {
+        Self { frame: 0 }
+    }
+}
+
+impl Renderer for IconRenderer {
+    fn render(&mut self, canvas: &Canvas, bounds: Rect) {
+        self.frame += 1;
+        canvas.save();
+        canvas.clip_rect(bounds, None, None);
+        canvas.translate((bounds.left, bounds.top));
+        render_frame(self.frame % 360, 12, 60, canvas);
+        canvas.restore();
+    }
+
+    fn handle_event(&mut self, _event: &WindowEvent) {
+        self.frame = self.frame.saturating_sub(10)
+    }
+}
 
 fn point_in_circle(center: (f32, f32), radius: f32, radians: f32) -> (f32, f32) {
     (
@@ -20,11 +49,11 @@ fn point_in_circle(center: (f32, f32), radius: f32, radians: f32) -> (f32, f32) 
     )
 }
 
-pub fn render_frame(
+fn render_frame(
     frame: usize,
     fps: usize,
     bpm: usize,
-    canvas: &skia_safe::canvas::Canvas,
+    canvas: &Canvas,
 ) -> usize {
     let step = 12.0 * bpm as f32 / 60.0 / fps as f32;
     let frame_count = (360.0 / step) as usize;
@@ -120,7 +149,7 @@ pub fn render_frame(
 }
 
 fn chain_ring(
-    canvas: &skia_safe::canvas::Canvas,
+    canvas: &Canvas,
     center: (i32, i32),
     radius: i32,
     rotation: f32,
@@ -263,7 +292,7 @@ fn chain_ring(
 
 #[allow(clippy::many_single_char_names)]
 fn triangle(
-    canvas: &skia_safe::canvas::Canvas,
+    canvas: &Canvas,
     center: (i32, i32),
     radius: i32,
     degrees: f32,

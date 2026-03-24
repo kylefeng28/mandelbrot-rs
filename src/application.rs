@@ -1,6 +1,6 @@
 /// Adapted from https://github.com/rust-skia/rust-skia/blob/master/skia-safe/examples/gl-window/main.rs
 
-use crate::renderer;
+use crate::renderer::Renderer;
 
 use std::{
     ffi::CString,
@@ -22,7 +22,7 @@ use winit::raw_window_handle::HasWindowHandle;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{KeyEvent, Modifiers, WindowEvent},
+    event::{KeyEvent, ElementState, Modifiers, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowAttributes},
 };
@@ -56,11 +56,11 @@ impl Drop for Env {
 
 pub struct Application {
     env: Env,
+    renderer: Box<dyn Renderer>,
     fb_info: FramebufferInfo,
     num_samples: usize,
     stencil_size: usize,
     modifiers: Modifiers,
-    frame: usize,
     previous_frame_start: Instant,
 }
 
@@ -101,22 +101,21 @@ impl ApplicationHandler for Application {
                 );
                 /* First resize the opengl drawable */
                 let (width, height): (u32, u32) = physical_size.into();
+                let width = NonZeroU32::new(width.max(1)).unwrap();
+                let height = NonZeroU32::new(height.max(1)).unwrap();
 
-                self.env.gl_surface.resize(
-                    &self.env.gl_context,
-                    NonZeroU32::new(width.max(1)).unwrap(),
-                    NonZeroU32::new(height.max(1)).unwrap(),
-                );
+                self.env.gl_surface.resize(&self.env.gl_context, width, height);
+                self.renderer.resize(width.into(), height.into());
             }
             WindowEvent::ModifiersChanged(new_modifiers) => self.modifiers = new_modifiers,
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, .. },
+                event: KeyEvent { ref logical_key, state: ElementState::Pressed, .. },
                 ..
             } => {
                 if self.modifiers.state().super_key() && logical_key == "q" {
                     event_loop.exit();
                 }
-                self.frame = self.frame.saturating_sub(10);
+                self.renderer.handle_event(&event);
                 self.env.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -133,10 +132,11 @@ impl ApplicationHandler for Application {
             self.previous_frame_start = frame_start;
         }
         if draw_frame {
-            self.frame += 1;
             let canvas = self.env.surface.canvas();
             canvas.clear(Color::WHITE);
-            renderer::render_frame(self.frame % 360, 12, 60, canvas);
+            let size = self.env.window.inner_size();
+            let bounds = skia_safe::Rect::from_wh(size.width as f32, size.height as f32);
+            self.renderer.render(canvas, bounds);
             self.env.gr_context.flush_and_submit();
             self.env
                 .gl_surface
@@ -181,7 +181,7 @@ pub fn create_event_loop() -> EventLoop<()> {
     EventLoop::new().expect("Failed to create event loop")
 }
 
-pub fn create_application(el: &EventLoop<()>) -> Application {
+pub fn create_application(el: &EventLoop<()>, renderer: Box<dyn Renderer>) -> Application {
     let window_attributes = WindowAttributes::default()
         .with_title("rust-skia-gl-window")
         .with_inner_size(LogicalSize::new(800, 800));
@@ -303,11 +303,11 @@ pub fn create_application(el: &EventLoop<()>) -> Application {
 
     Application {
         env,
+        renderer,
         fb_info,
         num_samples,
         stencil_size,
         modifiers: Modifiers::default(),
-        frame: 0,
         previous_frame_start: Instant::now(),
     }
 }
