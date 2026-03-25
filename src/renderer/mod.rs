@@ -1,3 +1,6 @@
+#![allow(unused)]
+pub mod viewer;
+
 pub mod icon_renderer;
 pub mod mandelbrot;
 

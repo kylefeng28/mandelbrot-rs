@@ -1,7 +1,9 @@
-use super::Renderer;
+use super::{
+    Renderer,
+    viewer::{self, DragState, Draggable, PanOrZoom},
+};
 use skia_safe::{AlphaType, Canvas, ColorType, Data, ImageInfo, Rect};
-use winit::event::{ElementState, WindowEvent, MouseButton, MouseScrollDelta};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::WindowEvent;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -20,13 +22,6 @@ struct SharedBuffer {
     height: u32,
     current_block_size: u32,
     done: bool,
-}
-
-enum DragState {
-    None,
-    /// State indicating the left mouse button is currently held for dragging
-    /// Holds coordinates of the last processed cursor coordiantes (in pixels)
-    Dragging(f64, f64),
 }
 
 /// Interactive Mandelbrot set renderer
@@ -241,73 +236,36 @@ impl Renderer for MandelbrotRenderer {
     }
 
     fn handle_event(&mut self, event: &WindowEvent) {
-        match event {
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != ElementState::Pressed {
-                    return;
-                }
-                let pan_amount = self.scale * 0.1;
-                match &event.logical_key {
-                    // Pan with arrow keys
-                    Key::Named(NamedKey::ArrowLeft)  => { self.center_re -= pan_amount; self.dirty = true; }
-                    Key::Named(NamedKey::ArrowRight) => { self.center_re += pan_amount; self.dirty = true; }
-                    Key::Named(NamedKey::ArrowUp)    => { self.center_im += pan_amount; self.dirty = true; }
-                    Key::Named(NamedKey::ArrowDown)  => { self.center_im -= pan_amount; self.dirty = true; }
-
-                    // Zoom with +/-
-                    Key::Character(ch) if ch.as_str() == "=" || ch.as_str() == "+" => {
-                        self.scale *= 0.8;
-                        self.dirty = true;
-                    }
-                    Key::Character(ch) if ch.as_str() == "-" => {
-                        self.scale *= 1.25;
-                        self.dirty = true;
-                    }
-                    _ => {}
-                }
+        let action = match event {
+            WindowEvent::KeyboardInput { .. } |
+            WindowEvent::MouseInput { .. } |
+            WindowEvent::CursorMoved { .. } |
+            WindowEvent::MouseWheel { .. } => {
+                self.handle_drag_event(event, self.width, self.height, self.scale)
             }
-            // Drag to pan: mouse down starts drag
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
-                if *state == ElementState::Pressed {
-                    self.drag_state = DragState::Dragging(self.cursor_pos.0, self.cursor_pos.1)
-                } else {
-                    self.drag_state = DragState::None;
-                }
-            }
-            // Drag to pan: mouse move while drag_state
-            WindowEvent::CursorMoved { position, .. } => {
-                if let DragState::Dragging(drag_x, drag_y) = self.drag_state && self.width > 0 {
-                    let dx = position.x - drag_x;
-                    let dy = position.y - drag_y;
+            _ => PanOrZoom::None
+        };
 
-                    // Convert pixel delta to complex plane delta
-                    let aspect = self.width as f64 / self.height.max(1) as f64;
-                    let pixels_per_unit_x = self.width as f64 / (2.0 * self.scale * aspect);
-                    let pixels_per_unit_y = self.height as f64 / (2.0 * self.scale);
-
-                    self.center_re -= dx / pixels_per_unit_x;
-                    self.center_im += dy / pixels_per_unit_y;
-                    self.dirty = true;
-
-                    self.drag_state = DragState::Dragging(position.x, position.y);
-                }
-
-                self.cursor_pos = (position.x, position.y);
-            }
-            // Scroll to zoom (centered on cursor position)
-            WindowEvent::MouseWheel { delta, .. } => {
-                let scroll_y = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / 50.0,
-                };
-                // Zoom factor: scroll up zooms in, scroll down zooms out
-                let factor = if scroll_y > 0.0 { 0.9 } else { 1.0 / 0.9 };
+        match action {
+            PanOrZoom::Pan(dx, dy) => {
+                self.center_re += dx;
+                self.center_im += dy;
+                self.dirty = true;
+            },
+            PanOrZoom::Zoom(factor) => {
                 self.scale *= factor;
                 self.dirty = true;
-            }
-            _ => {}
+            },
+            PanOrZoom::None => {},
         }
     }
+}
+
+impl Draggable for MandelbrotRenderer {
+    fn set_cursor_pos(&mut self, x: f64, y: f64) { self.cursor_pos = (x, y); }
+    fn get_cursor_pos(&mut self) -> (f64, f64) { self.cursor_pos }
+    fn set_drag_state(&mut self, drag_state: DragState) { self.drag_state = drag_state; }
+    fn get_drag_state(&self) -> &DragState { &self.drag_state }
 }
 
 /// Escape-time algorithm: returns iteration count (0..MAX_ITER)
