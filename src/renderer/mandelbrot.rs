@@ -9,19 +9,23 @@ use std::thread;
 /// Maximum iterations for the escape-time algorithm
 const MAX_ITER: u32 = 256;
 
+/// Starting block size for progressive refinement (powers of 2)
+const INITIAL_BLOCK_SIZE: u32 = 64;
+
 /// Shared pixel buffer (compute thread writes, render thread reads)
 struct SharedBuffer {
-    // Pixel buffer (ARGB)
     pixels: Vec<u32>,
     width: u32,
     height: u32,
-    rows_done: u32,
+    current_block_size: u32,
     done: bool,
 }
 
 /// Interactive Mandelbrot set renderer
 /// Supports panning with arrow keys and zooming with +/-
 /// Computation runs on a background thread so the main loop stays responsive
+/// Uses progressive refinement: renders the full image at coarse resolution
+/// first, then refines in multiple passes (64 -> 32 -> 16 -> ... -> 1)
 pub struct MandelbrotRenderer {
     center_re: f64,
     center_im: f64,
@@ -30,7 +34,6 @@ pub struct MandelbrotRenderer {
     width: u32,
     height: u32,
     dirty: bool,
-
     computing: bool,
     buffer: Arc<RwLock<SharedBuffer>>,
 }
@@ -49,13 +52,14 @@ impl MandelbrotRenderer {
                 pixels: Vec::new(),
                 width: 0,
                 height: 0,
-                rows_done: 0,
+                current_block_size: INITIAL_BLOCK_SIZE,
                 done: true,
             })),
         }
     }
 
-    /// Start new compute thread to compute the pixel buffer row by row
+    /// Kick off a background thread that computes the Mandelbrot set
+    /// using progressive refinement passes
     fn start_compute(&mut self) {
         self.computing = true;
         self.dirty = false;
@@ -74,7 +78,7 @@ impl MandelbrotRenderer {
             buf.pixels.fill(0);
             buf.width = w;
             buf.height = h;
-            buf.rows_done = 0;
+            buf.current_block_size = INITIAL_BLOCK_SIZE;
             buf.done = false;
         }
 
@@ -85,22 +89,50 @@ impl MandelbrotRenderer {
             let half_w = scale * aspect;
             let half_h = scale;
 
-            for py in 0..hu {
-                // Compute one row
-                let row_start = py * wu;
-                let mut row = vec![0u32; wu];
-                for px in 0..wu {
-                    // Map pixel to complex plane coordinates
-                    let c_re = center_re + (px as f64 / wu as f64 - 0.5) * 2.0 * half_w;
-                    let c_im = center_im - (py as f64 / hu as f64 - 0.5) * 2.0 * half_h;
-                    let iter = escape_time(c_re, c_im);
-                    row[px] = iter_to_color(iter);
+            let mut block_size = INITIAL_BLOCK_SIZE;
+
+            while block_size >= 1 {
+                let bs = block_size as usize;
+
+                for py in (0..hu).step_by(bs) {
+                    for px in (0..wu).step_by(bs) {
+                        // On refinement passes, skip pixels already computed
+                        // at the previous (coarser) block size
+                        if block_size < INITIAL_BLOCK_SIZE
+                            && px % (bs * 2) == 0
+                            && py % (bs * 2) == 0
+                        {
+                            continue;
+                        }
+
+                        // Map pixel to complex plane coordinates
+                        let c_re = center_re + (px as f64 / wu as f64 - 0.5) * 2.0 * half_w;
+                        let c_im = center_im - (py as f64 / hu as f64 - 0.5) * 2.0 * half_h;
+                        let iter = escape_time(c_re, c_im);
+                        let color = iter_to_color(iter);
+
+                        // Fill the block with this color
+                        let mut buf = buffer.write().unwrap();
+                        let bw = bs.min(wu - px);
+                        let bh = bs.min(hu - py);
+                        for by in 0..bh {
+                            // for bx in 0..bw {
+                            //     buf.pixels[(py + by) * wu + (px + bx)] = color;
+                            // }
+                            let offset = (py + by) * wu + px;
+                            buf.pixels[offset..(offset+bw)].fill(color);
+                        }
+                    }
                 }
 
-                // Write the completed row into the shared buffer
-                let mut buf = buffer.write().unwrap();
-                buf.pixels[row_start..row_start + wu].copy_from_slice(&row);
-                buf.rows_done = (py + 1) as u32;
+                // Update the current block size so the render thread knows
+                // the resolution of the latest completed pass
+                {
+                    let mut buf = buffer.write().unwrap();
+                    buf.current_block_size = block_size;
+                }
+
+                block_size /= 2;
             }
 
             // Mark computation as complete
@@ -126,24 +158,24 @@ impl Renderer for MandelbrotRenderer {
             self.start_compute();
         }
 
-        // Read the shared buffer (non-blocking if compute thread isn't writing)
+        // Read the shared buffer and draw whatever's been computed so far
         let buf = self.buffer.read().unwrap();
-
-        /// Draw whatever rows are available in the buffer
-        fn draw_buffer(canvas: &Canvas, bounds: Rect, buf: &SharedBuffer) {
-            if buf.width == 0 || buf.height == 0 {
-                return;
-            }
-            // Draw pixels as 1x1 rects. Not fast, but simple and correct
-            // TODO: use skia Image::from_raster for better performance
+        if buf.width > 0 && buf.height > 0 {
             let mut paint = Paint::default();
-            let rows = buf.rows_done;
-            for py in 0..rows {
-                for px in 0..buf.width {
+            // Draw blocks as rects of N*N pixels
+            // TODO: use skia Image::from_raster for better performance
+            let block_size = buf.current_block_size as usize;
+            for py in (0..buf.height).step_by(block_size) {
+                for px in (0..buf.width).step_by(block_size) {
                     let argb = buf.pixels[(py * buf.width + px) as usize];
                     paint.set_color(Color::from(argb));
                     canvas.draw_rect(
-                        Rect::from_xywh(bounds.left + px as f32, bounds.top + py as f32, 1.0, 1.0),
+                        Rect::from_xywh(
+                            bounds.left + px as f32,
+                            bounds.top + py as f32,
+                            block_size as f32,
+                            block_size as f32,
+                        ),
                         &paint,
                     );
                 }
@@ -152,18 +184,11 @@ impl Renderer for MandelbrotRenderer {
 
         // Check if computation finished so we can accept new work
         if buf.done && self.computing {
-            // Need to drop the read lock before mutating self
-            let should_recompute = self.dirty;
             drop(buf);
             self.computing = false;
-            if should_recompute {
+            if self.dirty {
                 self.start_compute();
             }
-            // Re-acquire for drawing
-            let buf = self.buffer.read().unwrap();
-            draw_buffer(canvas, bounds, &buf);
-        } else {
-            draw_buffer(canvas, bounds, &buf);
         }
     }
 
