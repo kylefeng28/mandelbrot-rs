@@ -152,6 +152,17 @@ impl LSystemRenderer {
         if self.segments.is_empty() {
             return;
         }
+        let (min_x, min_y, max_x, max_y) = self.bounding_box();
+        self.center_x = (min_x + max_x) / 2.0;
+        self.center_y = (min_y + max_y) / 2.0;
+        let w = max_x - min_x;
+        let h = max_y - min_y;
+        // Add 10% padding
+        self.scale = w.max(h) * 0.55;
+    }
+
+    /// Bounding box of all segments: (min_x, min_y, max_x, max_y)
+    fn bounding_box(&self) -> (f64, f64, f64, f64) {
         let mut min_x = f64::MAX;
         let mut min_y = f64::MAX;
         let mut max_x = f64::MIN;
@@ -162,12 +173,39 @@ impl LSystemRenderer {
             max_x = max_x.max(*x1).max(*x2);
             max_y = max_y.max(*y1).max(*y2);
         }
-        self.center_x = (min_x + max_x) / 2.0;
-        self.center_y = (min_y + max_y) / 2.0;
-        let w = max_x - min_x;
-        let h = max_y - min_y;
-        // Add 10% padding
-        self.scale = w.max(h) * 0.55;
+        (min_x, min_y, max_x, max_y)
+    }
+
+    /// Max dimension of the curve's bounding box
+    fn curve_extent(&self) -> f64 {
+        if self.segments.is_empty() { return 0.0; }
+        let (min_x, min_y, max_x, max_y) = self.bounding_box();
+        (max_x - min_x).max(max_y - min_y)
+    }
+
+    /// Change iteration count while keeping the curve at the same apparent
+    /// position and size on screen
+    fn change_iterations(&mut self, new_iterations: u32) {
+        let old_bb = self.bounding_box();
+        let old_center = ((old_bb.0 + old_bb.2) / 2.0, (old_bb.1 + old_bb.3) / 2.0);
+        let old_extent = (old_bb.2 - old_bb.0).max(old_bb.3 - old_bb.1);
+
+        self.iterations = new_iterations;
+        self.dirty = true;
+        self.recompute();
+
+        let new_bb = self.bounding_box();
+        let new_center = ((new_bb.0 + new_bb.2) / 2.0, (new_bb.1 + new_bb.3) / 2.0);
+        let new_extent = (new_bb.2 - new_bb.0).max(new_bb.3 - new_bb.1);
+
+        if old_extent > 0.0 && new_extent > 0.0 {
+            let ratio = new_extent / old_extent;
+            // Scale viewport to match the size change
+            self.scale *= ratio;
+            // Shift viewport center to track the curve's center shift
+            self.center_x += new_center.0 - old_center.0;
+            self.center_y += new_center.1 - old_center.1;
+        }
     }
 }
 
@@ -225,14 +263,12 @@ impl Renderer for LSystemRenderer {
                 match &key_event.logical_key {
                     Key::Character(ch) if ch.as_str() == "[" => {
                         if self.iterations > 0 {
-                            self.iterations -= 1;
-                            self.dirty = true;
+                            self.change_iterations(self.iterations - 1);
                         }
                     }
                     Key::Character(ch) if ch.as_str() == "]" => {
                         if self.iterations < self.max_iterations {
-                            self.iterations += 1;
-                            self.dirty = true;
+                            self.change_iterations(self.iterations + 1);
                         }
                     }
                     // Reset view to fit all segments
