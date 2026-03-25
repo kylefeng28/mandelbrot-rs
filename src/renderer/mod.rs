@@ -4,11 +4,11 @@ pub mod viewer;
 pub mod icon_renderer;
 pub mod julia;
 pub mod mandelbrot;
+pub mod progressive;
 
 use skia_safe::{Canvas, Rect};
 use winit::event::WindowEvent;
 
-#[allow(unused)]
 pub trait Renderer {
     /// Render content into the given region of the canvas.
     fn render(&mut self, canvas: &Canvas, bounds: Rect);
@@ -20,11 +20,11 @@ pub trait Renderer {
     fn handle_event(&mut self, event: &WindowEvent) {}
 }
 
-/// Map iteration count to a color (ARGB u32)
+/// Map iteration count to a color (BGRA8888 u32)
 /// Points in the set are black; escaped points get a smooth gradient
 pub fn iter_to_color(iter: u32, max_iter: u32) -> u32 {
     if iter == max_iter {
-        return 0xff_000000; // Black for points in the set
+        return 0xff_000000;
     }
 
     // Smooth coloring using a simple palette
