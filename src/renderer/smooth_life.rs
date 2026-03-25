@@ -3,16 +3,19 @@
 ///
 /// Instead of a discrete grid with {0,1} states, cells hold f32 values in [0,1].
 /// Neighborhoods are concentric discs with smooth transition functions.
+/// Uses FFT convolution for O(n² log n) per step instead of O(n² · ra²).
 use super::Renderer;
 use skia_safe::{
     AlphaType, Canvas, Color, ColorType, Data, ImageInfo, Rect,
 };
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+use rustfft::{FftPlanner, num_complex::Complex};
 
 /// Grid dimensions for the simulation
 const GRID_W: usize = 256;
 const GRID_H: usize = 256;
+const N: usize = GRID_W * GRID_H;
 
 /// SmoothLife parameters
 struct Params {
@@ -64,6 +67,12 @@ pub struct SmoothLifeRenderer {
     cursor_pos: (f64, f64),
     drag: Option<(MouseButton, f64, f64)>,
     dragged: bool,
+    /// Cached FFT kernels (recomputed when ri/ra change)
+    inner_kernel_fft: Vec<Complex<f32>>,
+    outer_kernel_fft: Vec<Complex<f32>>,
+    cached_ri: f32,
+    cached_ra: f32,
+    fft_planner: FftPlanner<f32>,
 }
 
 /// Smooth sigmoid
@@ -88,10 +97,98 @@ fn transition(n: f32, m: f32, p: &Params) -> f32 {
     sigma_n(n, alive_lo, alive_hi, p.alpha_n)
 }
 
+/// Build a normalized disc kernel in frequency domain.
+/// The kernel is centered at (0,0) with toroidal wrapping.
+fn build_kernel_fft(radius: f32, planner: &mut FftPlanner<f32>) -> Vec<Complex<f32>> {
+    let r_sq = radius * radius;
+    let mut kernel = vec![Complex::new(0.0f32, 0.0); N];
+    let mut count = 0.0f32;
+    let ri = radius.ceil() as i32;
+
+    for dy in -ri..=ri {
+        for dx in -ri..=ri {
+            if (dx * dx + dy * dy) as f32 <= r_sq {
+                let x = (dx as isize).rem_euclid(GRID_W as isize) as usize;
+                let y = (dy as isize).rem_euclid(GRID_H as isize) as usize;
+                kernel[y * GRID_W + x].re += 1.0;
+                count += 1.0;
+            }
+        }
+    }
+
+    // Normalize
+    if count > 0.0 {
+        for v in &mut kernel {
+            v.re /= count;
+        }
+    }
+
+    // 2D FFT via row-then-column
+    fft_2d_forward(&mut kernel, planner);
+    kernel
+}
+
+fn fft_2d_forward(data: &mut [Complex<f32>], planner: &mut FftPlanner<f32>) {
+    let fft_w = planner.plan_fft_forward(GRID_W);
+    let fft_h = planner.plan_fft_forward(GRID_H);
+
+    // FFT each row
+    for row in data.chunks_exact_mut(GRID_W) {
+        fft_w.process(row);
+    }
+
+    // FFT each column (need to gather/scatter)
+    let mut col_buf = vec![Complex::new(0.0f32, 0.0); GRID_H];
+    for x in 0..GRID_W {
+        for y in 0..GRID_H {
+            col_buf[y] = data[y * GRID_W + x];
+        }
+        fft_h.process(&mut col_buf);
+        for y in 0..GRID_H {
+            data[y * GRID_W + x] = col_buf[y];
+        }
+    }
+}
+
+fn fft_2d_inverse(data: &mut [Complex<f32>], planner: &mut FftPlanner<f32>) {
+    let ifft_w = planner.plan_fft_inverse(GRID_W);
+    let ifft_h = planner.plan_fft_inverse(GRID_H);
+    let scale = 1.0 / N as f32;
+
+    // IFFT each row
+    for row in data.chunks_exact_mut(GRID_W) {
+        ifft_w.process(row);
+    }
+
+    // IFFT each column
+    let mut col_buf = vec![Complex::new(0.0f32, 0.0); GRID_H];
+    for x in 0..GRID_W {
+        for y in 0..GRID_H {
+            col_buf[y] = data[y * GRID_W + x];
+        }
+        ifft_h.process(&mut col_buf);
+        for y in 0..GRID_H {
+            data[y * GRID_W + x] = col_buf[y];
+        }
+    }
+
+    // Normalize
+    for v in data.iter_mut() {
+        *v *= scale;
+    }
+}
+
+/// Pointwise multiply in frequency domain
+fn pointwise_mul(a: &[Complex<f32>], b: &[Complex<f32>], out: &mut [Complex<f32>]) {
+    for i in 0..a.len() {
+        out[i] = a[i] * b[i];
+    }
+}
+
 impl SmoothLifeRenderer {
     pub fn new() -> Self {
-        let mut grid = vec![0.0f32; GRID_W * GRID_H];
         // Seed: random blob in center
+        let mut grid = vec![0.0f32; N];
         let cx = GRID_W / 2;
         let cy = GRID_H / 2;
         let r = 20;
@@ -107,10 +204,19 @@ impl SmoothLifeRenderer {
             }
         }
 
+        let params = Params::default();
+        let mut planner = FftPlanner::new();
+
+        // Build the outer ring kernel = disc(ra) - disc(ri), normalized
+        let inner_kernel_fft = build_kernel_fft(params.ri, &mut planner);
+        let outer_kernel_fft = build_ring_kernel_fft(params.ri, params.ra, &mut planner);
+
         Self {
             grid,
-            pixels: vec![0; GRID_W * GRID_H],
-            params: Params::default(),
+            pixels: vec![0; N],
+            cached_ri: params.ri,
+            cached_ra: params.ra,
+            params,
             running: true,
             offset_x: 0.0,
             offset_y: 0.0,
@@ -120,66 +226,57 @@ impl SmoothLifeRenderer {
             cursor_pos: (0.0, 0.0),
             drag: None,
             dragged: false,
+            inner_kernel_fft,
+            outer_kernel_fft,
+            fft_planner: planner,
+        }
+    }
+
+    fn rebuild_kernels(&mut self) {
+        if self.params.ri != self.cached_ri || self.params.ra != self.cached_ra {
+            self.inner_kernel_fft = build_kernel_fft(self.params.ri, &mut self.fft_planner);
+            self.outer_kernel_fft = build_ring_kernel_fft(
+                self.params.ri, self.params.ra, &mut self.fft_planner,
+            );
+            self.cached_ri = self.params.ri;
+            self.cached_ra = self.params.ra;
         }
     }
 
     fn step(&mut self) {
-        let w = GRID_W;
-        let h = GRID_H;
-        let p = &self.params;
-        let ra = p.ra;
-        let ri = p.ri;
-        let ra_i = ra.ceil() as i32;
+        self.rebuild_kernels();
 
-        // Precompute disc areas
-        let ri_sq = ri * ri;
-        let ra_sq = ra * ra;
+        // Forward FFT of grid
+        let mut grid_fft: Vec<Complex<f32>> = self.grid.iter()
+            .map(|&v| Complex::new(v, 0.0))
+            .collect();
+        fft_2d_forward(&mut grid_fft, &mut self.fft_planner);
 
-        let mut new_grid = vec![0.0f32; w * h];
+        // Convolve with inner disc → m (cell state average)
+        let mut m_fft = vec![Complex::new(0.0f32, 0.0); N];
+        pointwise_mul(&grid_fft, &self.inner_kernel_fft, &mut m_fft);
+        fft_2d_inverse(&mut m_fft, &mut self.fft_planner);
 
-        for cy in 0..h {
-            for cx in 0..w {
-                let mut m_sum = 0.0f32; // inner disc
-                let mut m_count = 0.0f32;
-                let mut n_sum = 0.0f32; // outer ring
-                let mut n_count = 0.0f32;
+        // Convolve with outer ring → n (neighborhood average)
+        let mut n_fft = vec![Complex::new(0.0f32, 0.0); N];
+        pointwise_mul(&grid_fft, &self.outer_kernel_fft, &mut n_fft);
+        fft_2d_inverse(&mut n_fft, &mut self.fft_planner);
 
-                for dy in -ra_i..=ra_i {
-                    for dx in -ra_i..=ra_i {
-                        let dist_sq = (dx * dx + dy * dy) as f32;
-                        let nx = (cx as i32 + dx).rem_euclid(w as i32) as usize;
-                        let ny = (cy as i32 + dy).rem_euclid(h as i32) as usize;
-                        let val = self.grid[ny * w + nx];
-
-                        if dist_sq <= ri_sq {
-                            m_sum += val;
-                            m_count += 1.0;
-                        } else if dist_sq <= ra_sq {
-                            n_sum += val;
-                            n_count += 1.0;
-                        }
-                    }
-                }
-
-                let m = if m_count > 0.0 { m_sum / m_count } else { 0.0 };
-                let n = if n_count > 0.0 { n_sum / n_count } else { 0.0 };
-
-                let s = transition(n, m, p);
-                let cur = self.grid[cy * w + cx];
-                new_grid[cy * w + cx] = (cur + p.dt * (2.0 * s - 1.0)).clamp(0.0, 1.0);
-            }
+        // Apply transition function pointwise
+        let dt = self.params.dt;
+        for i in 0..N {
+            let m = m_fft[i].re;
+            let n = n_fft[i].re;
+            let s = transition(n, m, &self.params);
+            self.grid[i] = (self.grid[i] + dt * (2.0 * s - 1.0)).clamp(0.0, 1.0);
         }
-
-        self.grid = new_grid;
     }
 
     fn update_pixels(&mut self) {
         for (i, &v) in self.grid.iter().enumerate() {
             // Color map: black (0) → blue → cyan → white (1)
             let t = v.clamp(0.0, 1.0);
-            let r: u32;
-            let g: u32;
-            let b: u32;
+            let (r, g, b);
             if t < 0.5 {
                 let s = t * 2.0;
                 r = 0;
@@ -220,6 +317,36 @@ impl SmoothLifeRenderer {
         let gy = ((py / self.cell_size + self.offset_y) as i32).rem_euclid(GRID_H as i32) as usize;
         (gx, gy)
     }
+}
+
+/// Build a normalized ring kernel (ri < r <= ra) in frequency domain.
+fn build_ring_kernel_fft(ri: f32, ra: f32, planner: &mut FftPlanner<f32>) -> Vec<Complex<f32>> {
+    let ri_sq = ri * ri;
+    let ra_sq = ra * ra;
+    let mut kernel = vec![Complex::new(0.0f32, 0.0); N];
+    let mut count = 0.0f32;
+    let rai = ra.ceil() as i32;
+
+    for dy in -rai..=rai {
+        for dx in -rai..=rai {
+            let d_sq = (dx * dx + dy * dy) as f32;
+            if d_sq > ri_sq && d_sq <= ra_sq {
+                let x = (dx as isize).rem_euclid(GRID_W as isize) as usize;
+                let y = (dy as isize).rem_euclid(GRID_H as isize) as usize;
+                kernel[y * GRID_W + x].re += 1.0;
+                count += 1.0;
+            }
+        }
+    }
+
+    if count > 0.0 {
+        for v in &mut kernel {
+            v.re /= count;
+        }
+    }
+
+    fft_2d_forward(&mut kernel, planner);
+    kernel
 }
 
 impl Renderer for SmoothLifeRenderer {

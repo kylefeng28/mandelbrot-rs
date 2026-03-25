@@ -13,3 +13,4 @@ bytemuck = "1.25.0"
 egui = "0.33.3"
 egui-winit = "0.33.3"
 egui_skia = { git = "https://github.com/kylefeng28/egui_skia" }
+rustfft = "6.4.1"
