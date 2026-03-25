@@ -1,6 +1,7 @@
 use super::{
     Renderer, iter_to_color,
-    progressive::{FractalCompute, ProgressiveRenderer},
+    escape_time::EscapeTimeRenderer,
+    progressive::FractalCompute,
     viewer::{Draggable, DragState, DragEvent, PanOrZoom},
 };
 use skia_safe::{Canvas, Rect};
@@ -20,17 +21,12 @@ const MAX_ITER: u32 = 256;
 /// Calculation: iterate `z = z^2 + c`, where `c` is fixed and `z_0` varies per pixel.
 /// This is the same calculation as the Mandelbrot set, but Mandelbrot varies `c` and fixes `z_0`
 pub struct JuliaRenderer {
+    renderer: EscapeTimeRenderer<JuliaCompute>,
+
     /// The fixed complex constant c = c_re + c_im*i
     c_re: f64,
     c_im: f64,
-    /// Center of the viewport in the z-plane
-    center_re: f64,
-    center_im: f64,
-    /// Half-width of the viewport
-    scale: f64,
-    progressive: ProgressiveRenderer,
-    drag_state: DragState,
-    cursor_pos: (f64, f64),
+
     /// Index into the preset list for cycling with 'c'
     preset_index: usize,
 }
@@ -53,15 +49,12 @@ impl JuliaRenderer {
     pub fn new(c_re: f64, c_im: f64) -> Self {
         log_c(c_re, c_im);
 
+        let compute = Self::build_compute(c_re, c_im);
+
         Self {
+            renderer: EscapeTimeRenderer::new(compute),
             c_re,
             c_im,
-            center_re: 0.0,
-            center_im: 0.0,
-            scale: 1.8,
-            progressive: ProgressiveRenderer::new(),
-            drag_state: DragState::None,
-            cursor_pos: (0.0, 0.0),
             preset_index: 0,
         }
     }
@@ -69,27 +62,26 @@ impl JuliaRenderer {
     fn set_c(&mut self, c_re: f64, c_im: f64) {
         self.c_re = c_re;
         self.c_im = c_im;
+
+        self.renderer.compute = Self::build_compute(c_re, c_im);
+
         log_c(c_re, c_im);
-        self.progressive.mark_dirty();
+        self.renderer.mark_dirty();
     }
 
     /// Build the compute object for the current c value
-    fn compute(&self) -> Arc<dyn FractalCompute> {
-        Arc::new(JuliaCompute { c_re: self.c_re, c_im: self.c_im })
+    fn build_compute(c_re: f64, c_im: f64) -> Arc<JuliaCompute> {
+        Arc::new(JuliaCompute { c_re, c_im })
     }
 }
 
 impl Renderer for JuliaRenderer {
     fn render(&mut self, canvas: &Canvas, bounds: Rect) {
-        self.progressive.render(
-            canvas, bounds,
-            self.compute(),
-            self.center_re, self.center_im, self.scale,
-        );
+        self.renderer.render(canvas, bounds);
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        self.progressive.set_size(width, height);
+        self.renderer.resize(width, height);
     }
 
     fn handle_event(&mut self, event: &WindowEvent) {
@@ -106,8 +98,8 @@ impl Renderer for JuliaRenderer {
             }
         }
 
-        let drag_event = self.handle_drag_event(
-            event, self.progressive.width, self.progressive.height, self.scale,
+        let drag_event = self.renderer.handle_drag_event(
+            event, self.renderer.progressive.width, self.renderer.progressive.height, self.renderer.scale,
         );
 
         // Right-click drag: change c value
@@ -121,26 +113,8 @@ impl Renderer for JuliaRenderer {
             DragEvent::Zoom(factor) => PanOrZoom::Zoom(factor),
             _ => PanOrZoom::None,
         };
-        match action {
-            PanOrZoom::Pan(dx, dy) => {
-                self.center_re += dx;
-                self.center_im += dy;
-                self.progressive.mark_dirty();
-            }
-            PanOrZoom::Zoom(factor) => {
-                self.scale *= factor;
-                self.progressive.mark_dirty();
-            }
-            PanOrZoom::None => {}
-        }
+        self.renderer.handle_drag_action(&action);
     }
-}
-
-impl Draggable for JuliaRenderer {
-    fn set_cursor_pos(&mut self, x: f64, y: f64) { self.cursor_pos = (x, y); }
-    fn get_cursor_pos(&mut self) -> (f64, f64) { self.cursor_pos }
-    fn set_drag_state(&mut self, drag_state: DragState) { self.drag_state = drag_state; }
-    fn get_drag_state(&self) -> &DragState { &self.drag_state }
 }
 
 struct JuliaCompute {

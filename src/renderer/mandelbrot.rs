@@ -1,7 +1,7 @@
 use super::{
     Renderer, iter_to_color,
     escape_time::EscapeTimeRenderer,
-    progressive::{FractalCompute, ProgressiveRenderer},
+    progressive::FractalCompute,
     viewer::{Draggable, DragState, DragEvent, PanOrZoom},
 };
 use skia_safe::{Canvas, Rect};

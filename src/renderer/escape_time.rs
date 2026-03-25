@@ -13,14 +13,14 @@ const MAX_ITER: u32 = 256;
 /// Interactive renderer for escape-time fractals like the Mandelbrot set, Julia set, etc
 /// Supports panning with arrow keys and zooming with +/-
 pub struct EscapeTimeRenderer<T: FractalCompute> {
-    compute: Arc<T>,
+    pub(crate) compute: Arc<T>,
 
     /// Center of the viewport in the z-plane
     center_re: f64,
     center_im: f64,
     /// Half-width of the viewport in the complex plane
-    scale: f64,
-    progressive: ProgressiveRenderer,
+    pub(crate) scale: f64,
+    pub(crate) progressive: ProgressiveRenderer,
     drag_state: DragState,
     cursor_pos: (f64, f64),
 }
@@ -36,6 +36,25 @@ impl<T: FractalCompute> EscapeTimeRenderer<T> {
             progressive: ProgressiveRenderer::new(),
             drag_state: DragState::None,
             cursor_pos: (0.0, 0.0),
+        }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.progressive.mark_dirty();
+    }
+
+    pub fn handle_drag_action(&mut self, action: &PanOrZoom) {
+        match action {
+            PanOrZoom::Pan(dx, dy) => {
+                self.center_re += dx;
+                self.center_im += dy;
+                self.progressive.mark_dirty();
+            }
+            PanOrZoom::Zoom(factor) => {
+                self.scale *= factor;
+                self.progressive.mark_dirty();
+            }
+            PanOrZoom::None => {}
         }
     }
 }
@@ -63,18 +82,7 @@ impl<T: FractalCompute + 'static> Renderer for EscapeTimeRenderer<T> {
             DragEvent::Zoom(factor) => PanOrZoom::Zoom(factor),
             DragEvent::None => PanOrZoom::None,
         };
-        match action {
-            PanOrZoom::Pan(dx, dy) => {
-                self.center_re += dx;
-                self.center_im += dy;
-                self.progressive.mark_dirty();
-            }
-            PanOrZoom::Zoom(factor) => {
-                self.scale *= factor;
-                self.progressive.mark_dirty();
-            }
-            PanOrZoom::None => {}
-        }
+        self.handle_drag_action(&action);
     }
 }
 
