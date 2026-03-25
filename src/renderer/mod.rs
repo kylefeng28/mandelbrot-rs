@@ -3,6 +3,7 @@ pub mod viewer;
 
 pub mod icon_renderer;
 pub mod julia;
+pub mod lsystem;
 pub mod mandelbrot;
 pub mod progressive;
 pub mod escape_time;

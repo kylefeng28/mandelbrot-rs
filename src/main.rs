@@ -19,6 +19,9 @@ fn main() {
             let preset = renderer::julia::PRESETS[0];
             Box::new(renderer::julia::JuliaRenderer::new(preset.0, preset.1))
         }
+        "koch" => {
+            Box::new(renderer::lsystem::koch::new(5))
+        }
         _ => panic!("unknown renderer {name}")
     };
 
