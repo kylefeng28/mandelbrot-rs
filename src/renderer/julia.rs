@@ -3,7 +3,8 @@ use super::{
     viewer::{self, Draggable, DragState, PanOrZoom},
 };
 use skia_safe::{AlphaType, Canvas, ColorType, Data, ImageInfo, Rect};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent, KeyEvent};
+use winit::keyboard::Key;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -24,38 +25,50 @@ struct SharedBuffer {
     done: bool,
 }
 
-/// Interactive Mandelbrot set renderer
+/// Interactive Julia set renderer
 /// Supports panning with arrow keys and zooming with +/-
 ///
-/// Calculation: iterate `z = z^2 + c`, where `z_0` is fixed and `c` varies per pixel.
-/// This is the same calculation as the Julia set, but Julia fixes `c` and varies `z_0`
-///
-/// Computation runs on a background thread so the main loop stays responsive
-/// Uses progressive refinement: renders the full image at coarse resolution
-/// first, then refines in multiple passes (64 -> 32 -> 16 -> ... -> 1)
-pub struct MandelbrotRenderer {
+/// Calculation: iterate `z = z^2 + c`, where `c` is fixed and `z_0` varies per pixel.
+/// This is the same calculation as the Mandelbrot set, but Mandelbrot varies `c` and fixes `z_0` 
+pub struct JuliaRenderer {
+    /// The fixed complex constant c = c_re + c_im*i
+    c_re: f64,
+    c_im: f64,
+    /// Center of the viewport in the z-plane
     center_re: f64,
     center_im: f64,
-    /// Half-width of the viewport in the complex plane
+    /// Half-width of the viewport
     scale: f64,
     width: u32,
     height: u32,
     dirty: bool,
     computing: bool,
     buffer: Arc<RwLock<SharedBuffer>>,
-    /// Set to true to signal the compute thread to stop early
     cancel: Arc<AtomicBool>,
-
     drag_state: DragState,
     cursor_pos: (f64, f64),
+    /// Index into the preset list for cycling with 'c'
+    preset_index: usize,
 }
 
-impl MandelbrotRenderer {
-    pub fn new() -> Self {
+/// Some visually interesting Julia set constants
+pub const PRESETS: [(f64, f64); 6] = [
+    (-0.7269, 0.1889),   // Dendrite-like
+    (-0.8, 0.156),       // Spiral arms
+    (0.285, 0.01),       // Near parabolic
+    (-0.4, 0.6),         // Rabbit-like
+    (0.355, 0.355),      // Disconnected dust
+    (-0.54, 0.54),       // Branching tendrils
+];
+
+impl JuliaRenderer {
+    pub fn new(c_re: f64, c_im: f64) -> Self {
         Self {
-            center_re: -0.5, // slightly to left to show full view
+            c_re,
+            c_im,
+            center_re: 0.0,
             center_im: 0.0,
-            scale: 1.5,
+            scale: 1.8,
             width: 0,
             height: 0,
             dirty: true,
@@ -70,15 +83,14 @@ impl MandelbrotRenderer {
             cancel: Arc::new(AtomicBool::new(false)),
             drag_state: DragState::None,
             cursor_pos: (0.0, 0.0),
+            preset_index: 0,
         }
     }
 
-    /// Kick off a background thread that computes the Mandelbrot set
+    /// Kick off a background thread that computes the Julia set
     /// using progressive refinement passes
     fn start_compute(&mut self) {
-        // Create a new flag for the new thread
         self.cancel = Arc::new(AtomicBool::new(false));
-
         self.computing = true;
         self.dirty = false;
 
@@ -87,6 +99,8 @@ impl MandelbrotRenderer {
         let center_re = self.center_re;
         let center_im = self.center_im;
         let scale = self.scale;
+        let c_re = self.c_re;
+        let c_im = self.c_im;
         let buffer = Arc::clone(&self.buffer);
         let cancel = Arc::clone(&self.cancel);
 
@@ -120,7 +134,6 @@ impl MandelbrotRenderer {
 
                     for px in (0..wu).step_by(bs) {
                         // On refinement passes, skip pixels already computed
-                        // at the previous (coarser) block size
                         if block_size < INITIAL_BLOCK_SIZE
                             && px % (bs * 2) == 0
                             && py % (bs * 2) == 0
@@ -128,10 +141,10 @@ impl MandelbrotRenderer {
                             continue;
                         }
 
-                        // Map pixel to complex plane coordinates
-                        let c_re = center_re + (px as f64 / wu as f64 - 0.5) * 2.0 * half_w;
-                        let c_im = center_im - (py as f64 / hu as f64 - 0.5) * 2.0 * half_h;
-                        let iter = escape_time(c_re, c_im);
+                        // Map pixel to z-plane coordinates (this is z₀ for Julia)
+                        let z_re = center_re + (px as f64 / wu as f64 - 0.5) * 2.0 * half_w;
+                        let z_im = center_im - (py as f64 / hu as f64 - 0.5) * 2.0 * half_h;
+                        let iter = julia_escape_time(z_re, z_im, c_re, c_im);
                         let color = iter_to_color(iter, MAX_ITER);
 
                         // Fill the block with this color
@@ -139,17 +152,12 @@ impl MandelbrotRenderer {
                         let bw = bs.min(wu - px);
                         let bh = bs.min(hu - py);
                         for by in 0..bh {
-                            // for bx in 0..bw {
-                            //     buf.pixels[(py + by) * wu + (px + bx)] = color;
-                            // }
                             let offset = (py + by) * wu + px;
-                            buf.pixels[offset..(offset+bw)].fill(color);
+                            buf.pixels[offset..(offset + bw)].fill(color);
                         }
                     }
                 }
 
-                // Update the current block size so the render thread knows
-                // the resolution of the latest completed pass
                 {
                     let mut buf = buffer.write().unwrap();
                     buf.current_block_size = block_size;
@@ -158,58 +166,29 @@ impl MandelbrotRenderer {
                 block_size /= 2;
             }
 
-            // Mark computation as complete
             buffer.write().unwrap().done = true;
         });
     }
 }
 
-impl Renderer for MandelbrotRenderer {
+impl Renderer for JuliaRenderer {
     fn render(&mut self, canvas: &Canvas, bounds: Rect) {
         let w = bounds.width() as u32;
         let h = bounds.height() as u32;
 
-        // Resize pixel buffer if bounds changed
         if w != self.width || h != self.height {
             self.width = w;
             self.height = h;
             self.dirty = true;
         }
 
-        // Start a background compute if needed
         if self.dirty && w > 0 && h > 0 {
-            // Cancel any in-flight computation
             self.cancel.store(true, Ordering::Relaxed);
             self.start_compute();
         }
 
-        // Read the shared buffer and draw whatever's been computed so far
         let buf = self.buffer.read().unwrap();
         if buf.width > 0 && buf.height > 0 {
-            /*
-            use skia_safe::{Color, Paint, Rect};
-            let mut paint = Paint::default();
-            // Draw blocks as rects of N*N pixels
-            // TODO: use skia Image::from_raster for better performance
-            let block_size = buf.current_block_size as usize;
-            for py in (0..buf.height).step_by(block_size) {
-                for px in (0..buf.width).step_by(block_size) {
-                    let argb = buf.pixels[(py * buf.width + px) as usize];
-                    paint.set_color(Color::from(argb));
-                    canvas.draw_rect(
-                        Rect::from_xywh(
-                            bounds.left + px as f32,
-                            bounds.top + py as f32,
-                            block_size as f32,
-                            block_size as f32,
-                        ),
-                        &paint,
-                    );
-                }
-            }
-            */
-
-            // Blit the pixel buffer as a raster image in one draw call
             let info = ImageInfo::new(
                 (w as i32, h as i32),
                 ColorType::BGRA8888,
@@ -224,7 +203,6 @@ impl Renderer for MandelbrotRenderer {
             }
         }
 
-        // Check if computation finished
         if buf.done && self.computing {
             drop(buf);
             self.computing = false;
@@ -241,7 +219,24 @@ impl Renderer for MandelbrotRenderer {
 
     fn handle_event(&mut self, event: &WindowEvent) {
         let action = match event {
-            WindowEvent::KeyboardInput { .. } |
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                if key_event.state != ElementState::Pressed {
+                    return;
+                }
+                match &key_event.logical_key {
+                    // Press 'c' to cycle through preset Julia constants
+                    Key::Character(ch) if ch.as_str() == "c" => {
+                        self.preset_index = (self.preset_index + 1) % PRESETS.len();
+                        let (re, im) = PRESETS[self.preset_index];
+                        self.c_re = re;
+                        self.c_im = im;
+                        self.dirty = true;
+                    }
+                    _ => {}
+                }
+
+                self.handle_drag_event(event, self.width, self.height, self.scale)
+            }
             WindowEvent::MouseInput { .. } |
             WindowEvent::CursorMoved { .. } |
             WindowEvent::MouseWheel { .. } => {
@@ -265,20 +260,16 @@ impl Renderer for MandelbrotRenderer {
     }
 }
 
-impl Draggable for MandelbrotRenderer {
+impl Draggable for JuliaRenderer {
     fn set_cursor_pos(&mut self, x: f64, y: f64) { self.cursor_pos = (x, y); }
     fn get_cursor_pos(&mut self) -> (f64, f64) { self.cursor_pos }
     fn set_drag_state(&mut self, drag_state: DragState) { self.drag_state = drag_state; }
     fn get_drag_state(&self) -> &DragState { &self.drag_state }
 }
 
-/// Escape-time algorithm: returns iteration count (0..MAX_ITER)
-/// Returns MAX_ITER if the point is in the set
-/// Mandelbrot set escape-time: iterate z = z^2 + c starting from z_0 = (z_re, z_im)
-/// with with varying c = (c_re, c_im)
-fn escape_time(c_re: f64, c_im: f64) -> u32 {
-    let mut z_re = 0.0;
-    let mut z_im = 0.0;
+/// Julia set escape-time: iterate z = z^2 + c starting from z_0 = (z_re, z_im)
+/// with fixed c = (c_re, c_im)
+fn julia_escape_time(mut z_re: f64, mut z_im: f64, c_re: f64, c_im: f64) -> u32 {
     for i in 0..MAX_ITER {
         let z_re2 = z_re * z_re;
         let z_im2 = z_im * z_im;
