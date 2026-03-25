@@ -3,6 +3,7 @@ use skia_safe::{AlphaType, Canvas, ColorType, Data, ImageInfo, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
@@ -36,6 +37,8 @@ pub struct MandelbrotRenderer {
     dirty: bool,
     computing: bool,
     buffer: Arc<RwLock<SharedBuffer>>,
+    /// Set to true to signal the compute thread to stop early
+    cancel: Arc<AtomicBool>,
 }
 
 impl MandelbrotRenderer {
@@ -55,12 +58,16 @@ impl MandelbrotRenderer {
                 current_block_size: INITIAL_BLOCK_SIZE,
                 done: true,
             })),
+            cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Kick off a background thread that computes the Mandelbrot set
     /// using progressive refinement passes
     fn start_compute(&mut self) {
+        // Create a new flag for the new thread
+        self.cancel = Arc::new(AtomicBool::new(false));
+
         self.computing = true;
         self.dirty = false;
 
@@ -70,12 +77,12 @@ impl MandelbrotRenderer {
         let center_im = self.center_im;
         let scale = self.scale;
         let buffer = Arc::clone(&self.buffer);
+        let cancel = Arc::clone(&self.cancel);
 
-        // Initialize the shared buffer for the new computation
+        // Initialize the shared buffer for the new computation.
         {
             let mut buf = buffer.write().unwrap();
             buf.pixels.resize((w * h) as usize, 0);
-            buf.pixels.fill(0);
             buf.width = w;
             buf.height = h;
             buf.current_block_size = INITIAL_BLOCK_SIZE;
@@ -95,6 +102,11 @@ impl MandelbrotRenderer {
                 let bs = block_size as usize;
 
                 for py in (0..hu).step_by(bs) {
+                    // Check for cancellation at each row
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+
                     for px in (0..wu).step_by(bs) {
                         // On refinement passes, skip pixels already computed
                         // at the previous (coarser) block size
@@ -153,8 +165,10 @@ impl Renderer for MandelbrotRenderer {
             self.dirty = true;
         }
 
-        // Start a background compute if needed and not already running
-        if self.dirty && !self.computing && w > 0 && h > 0 {
+        // Start a background compute if needed
+        if self.dirty && w > 0 && h > 0 {
+            // Cancel any in-flight computation
+            self.cancel.store(true, Ordering::Relaxed);
             self.start_compute();
         }
 
@@ -199,13 +213,10 @@ impl Renderer for MandelbrotRenderer {
             }
         }
 
-        // Check if computation finished so we can accept new work
+        // Check if computation finished
         if buf.done && self.computing {
             drop(buf);
             self.computing = false;
-            if self.dirty {
-                self.start_compute();
-            }
         }
     }
 
