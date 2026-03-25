@@ -19,21 +19,23 @@ const PEN_SIZE: f32 = 1.0;
 
 pub struct IconRenderer {
     frame: usize,
+    bpm: f32,
+    dir: i8,
 }
 
 impl IconRenderer {
-    pub fn new() -> Self {
-        Self { frame: 0 }
+    pub fn new(bpm: f32) -> Self {
+        Self { frame: 0, bpm, dir: 1 }
     }
 }
 
 impl Renderer for IconRenderer {
     fn render(&mut self, canvas: &Canvas, bounds: Rect) {
-        self.frame += 1;
+        self.frame = (self.frame as isize + self.dir as isize).rem_euclid(360) as usize;
         canvas.save();
         canvas.clip_rect(bounds, None, None);
         canvas.translate((bounds.left, bounds.top));
-        render_frame(self.frame % 360, 12, 60, canvas);
+        render_frame(self.frame % 360, 12, self.bpm, canvas);
         canvas.restore();
     }
 
@@ -45,8 +47,12 @@ impl Renderer for IconRenderer {
             } => {
                 println!("{logical_key:?}");
                 match logical_key {
-                    Key::Named(NamedKey::Space) => self.frame = self.frame.saturating_add(10),
-                    _ => self.frame = self.frame.saturating_sub(10)
+                    Key::Named(NamedKey::Space) => self.dir = -self.dir,
+                    Key::Character(c) => {
+                        if c == "h" { self.frame = (self.frame + 10) % 360; }
+                        if c == "l" { self.frame = (self.frame as isize - 10).rem_euclid(360) as usize; }
+                    },
+                    _ => { self.frame = (self.frame as isize - 10).rem_euclid(360) as usize; }
                 }
             }
             _ => {}
@@ -64,11 +70,11 @@ fn point_in_circle(center: (f32, f32), radius: f32, radians: f32) -> (f32, f32) 
 fn render_frame(
     frame: usize,
     fps: usize,
-    bpm: usize,
+    bpm: f32,
     canvas: &Canvas,
 ) -> usize {
     let step = 12.0 * bpm as f32 / 60.0 / fps as f32;
-    let frame_count = (360.0 / step) as usize;
+    let frame_count = (360.0 / step.abs()) as usize;
 
     let size = {
         let dim = canvas.image_info().dimensions();
