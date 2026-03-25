@@ -3,21 +3,36 @@ use skia_safe::{Canvas, Color, Paint, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use std::sync::{Arc, RwLock};
+use std::thread;
+
 /// Maximum iterations for the escape-time algorithm
 const MAX_ITER: u32 = 256;
 
+/// Shared pixel buffer (compute thread writes, render thread reads)
+struct SharedBuffer {
+    // Pixel buffer (ARGB)
+    pixels: Vec<u32>,
+    width: u32,
+    height: u32,
+    rows_done: u32,
+    done: bool,
+}
+
 /// Interactive Mandelbrot set renderer
 /// Supports panning with arrow keys and zooming with +/-
+/// Computation runs on a background thread so the main loop stays responsive
 pub struct MandelbrotRenderer {
     center_re: f64,
     center_im: f64,
     /// Half-width of the viewport in the complex plane
     scale: f64,
-    /// Cached pixel buffer (ARGB). Regenerated on parameter change
-    pixels: Vec<u32>,
     width: u32,
     height: u32,
     dirty: bool,
+
+    computing: bool,
+    buffer: Arc<RwLock<SharedBuffer>>,
 }
 
 impl MandelbrotRenderer {
@@ -26,34 +41,71 @@ impl MandelbrotRenderer {
             center_re: -0.5, // slightly to left to show full view
             center_im: 0.0,
             scale: 1.5,
-            pixels: Vec::new(),
             width: 0,
             height: 0,
             dirty: true,
+            computing: false,
+            buffer: Arc::new(RwLock::new(SharedBuffer {
+                pixels: Vec::new(),
+                width: 0,
+                height: 0,
+                rows_done: 0,
+                done: true,
+            })),
         }
     }
 
-    fn recompute(&mut self) {
-        let w = self.width as usize;
-        let h = self.height as usize;
-        self.pixels.resize(w * h, 0);
+    /// Start new compute thread to compute the pixel buffer row by row
+    fn start_compute(&mut self) {
+        self.computing = true;
+        self.dirty = false;
 
-        let aspect = w as f64 / h.max(1) as f64;
-        let half_w = self.scale * aspect;
-        let half_h = self.scale;
+        let w = self.width;
+        let h = self.height;
+        let center_re = self.center_re;
+        let center_im = self.center_im;
+        let scale = self.scale;
+        let buffer = Arc::clone(&self.buffer);
 
-        for py in 0..h {
-            for px in 0..w {
-                // Map pixel to complex plane coordinates
-                let c_re = self.center_re + (px as f64 / w as f64 - 0.5) * 2.0 * half_w;
-                let c_im = self.center_im - (py as f64 / h as f64 - 0.5) * 2.0 * half_h;
-
-                let iter = escape_time(c_re, c_im);
-                self.pixels[py * w + px] = iter_to_color(iter);
-            }
+        // Initialize the shared buffer for the new computation
+        {
+            let mut buf = buffer.write().unwrap();
+            buf.pixels.resize((w * h) as usize, 0);
+            buf.pixels.fill(0);
+            buf.width = w;
+            buf.height = h;
+            buf.rows_done = 0;
+            buf.done = false;
         }
 
-        self.dirty = false;
+        thread::spawn(move || {
+            let wu = w as usize;
+            let hu = h as usize;
+            let aspect = wu as f64 / hu.max(1) as f64;
+            let half_w = scale * aspect;
+            let half_h = scale;
+
+            for py in 0..hu {
+                // Compute one row
+                let row_start = py * wu;
+                let mut row = vec![0u32; wu];
+                for px in 0..wu {
+                    // Map pixel to complex plane coordinates
+                    let c_re = center_re + (px as f64 / wu as f64 - 0.5) * 2.0 * half_w;
+                    let c_im = center_im - (py as f64 / hu as f64 - 0.5) * 2.0 * half_h;
+                    let iter = escape_time(c_re, c_im);
+                    row[px] = iter_to_color(iter);
+                }
+
+                // Write the completed row into the shared buffer
+                let mut buf = buffer.write().unwrap();
+                buf.pixels[row_start..row_start + wu].copy_from_slice(&row);
+                buf.rows_done = (py + 1) as u32;
+            }
+
+            // Mark computation as complete
+            buffer.write().unwrap().done = true;
+        });
     }
 }
 
@@ -69,22 +121,49 @@ impl Renderer for MandelbrotRenderer {
             self.dirty = true;
         }
 
-        if self.dirty && w > 0 && h > 0 {
-            self.recompute();
+        // Start a background compute if needed and not already running
+        if self.dirty && !self.computing && w > 0 && h > 0 {
+            self.start_compute();
         }
 
-        // Draw pixels as 1x1 rects. Not fast, but simple and correct
-        // TODO: use skia Image::from_raster for better performance
-        let mut paint = Paint::default();
-        for py in 0..h {
-            for px in 0..w {
-                let argb = self.pixels[(py * w + px) as usize];
-                paint.set_color(Color::from(argb));
-                canvas.draw_rect(
-                    Rect::from_xywh(bounds.left + px as f32, bounds.top + py as f32, 1.0, 1.0),
-                    &paint,
-                );
+        // Read the shared buffer (non-blocking if compute thread isn't writing)
+        let buf = self.buffer.read().unwrap();
+
+        /// Draw whatever rows are available in the buffer
+        fn draw_buffer(canvas: &Canvas, bounds: Rect, buf: &SharedBuffer) {
+            if buf.width == 0 || buf.height == 0 {
+                return;
             }
+            // Draw pixels as 1x1 rects. Not fast, but simple and correct
+            // TODO: use skia Image::from_raster for better performance
+            let mut paint = Paint::default();
+            let rows = buf.rows_done;
+            for py in 0..rows {
+                for px in 0..buf.width {
+                    let argb = buf.pixels[(py * buf.width + px) as usize];
+                    paint.set_color(Color::from(argb));
+                    canvas.draw_rect(
+                        Rect::from_xywh(bounds.left + px as f32, bounds.top + py as f32, 1.0, 1.0),
+                        &paint,
+                    );
+                }
+            }
+        }
+
+        // Check if computation finished so we can accept new work
+        if buf.done && self.computing {
+            // Need to drop the read lock before mutating self
+            let should_recompute = self.dirty;
+            drop(buf);
+            self.computing = false;
+            if should_recompute {
+                self.start_compute();
+            }
+            // Re-acquire for drawing
+            let buf = self.buffer.read().unwrap();
+            draw_buffer(canvas, bounds, &buf);
+        } else {
+            draw_buffer(canvas, bounds, &buf);
         }
     }
 
