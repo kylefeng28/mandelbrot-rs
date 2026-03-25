@@ -19,9 +19,10 @@ fn main() {
             let preset = renderer::julia::PRESETS[0];
             Box::new(renderer::julia::JuliaRenderer::new(preset.0, preset.1))
         }
-        "koch" => {
-            Box::new(renderer::lsystem::koch::new(5))
-        }
+        "koch" => { Box::new(renderer::lsystem::koch::new(5)) }
+        "sierpinski" => { Box::new(renderer::lsystem::sierpinski::new(5)) }
+        "dragon" => { Box::new(renderer::lsystem::dragon::new(12)) }
+        "barnsley" | "barnsley_fern" | "fern" => { Box::new(renderer::lsystem::barnsley_fern::new(5)) }
         _ => panic!("unknown renderer {name}")
     };
 

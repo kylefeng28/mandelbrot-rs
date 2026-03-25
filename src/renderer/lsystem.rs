@@ -61,7 +61,7 @@ impl LSystemDef {
         for ch in instructions.chars() {
             match ch {
                 // Draw forward
-                'F' => {
+                'F' | 'G' => {
                     let nx = x + heading.cos();
                     let ny = y + heading.sin();
                     segments.push(((x, y), (nx, ny)));
@@ -186,6 +186,8 @@ impl LSystemRenderer {
     /// Change iteration count while keeping the curve at the same apparent
     /// position and size on screen
     fn change_iterations(&mut self, new_iterations: u32) {
+        println!("current iterations: {new_iterations}");
+
         let old_bb = self.bounding_box();
         let old_center = ((old_bb.0 + old_bb.2) / 2.0, (old_bb.1 + old_bb.3) / 2.0);
         let old_extent = (old_bb.2 - old_bb.0).max(old_bb.3 - old_bb.1);
@@ -324,6 +326,79 @@ pub mod koch {
             },
             iterations,
             7, // max iterations (gets very dense beyond this)
+        )
+    }
+}
+
+pub mod sierpinski {
+    use super::{LSystemDef, LSystemRenderer};
+
+    /// Sierpinski triangle L-system
+    ///
+    /// Uses two drawing symbols F and G that both draw forward.
+    /// Axiom: F-G-G
+    /// Rules: F → F-G+F+G-F, G → GG
+    /// Angle: 120°
+    pub fn new(iterations: u32) -> LSystemRenderer {
+        LSystemRenderer::new(
+            LSystemDef {
+                axiom: "F-G-G",
+                rules: &[('F', "F-G+F+G-F"), ('G', "GG")],
+                angle: 120.0,
+                initial_heading: 0.0,
+            },
+            iterations,
+            9,
+        )
+    }
+}
+
+pub mod dragon {
+    use super::{LSystemDef, LSystemRenderer};
+
+    /// Dragon curve L-system
+    ///
+    /// Axiom: F
+    /// Rules: F → F+G, G → F-G
+    /// Angle: 90°
+    ///
+    /// Both F and G draw forward; the curve folds on itself
+    /// like a repeatedly folded strip of paper.
+    pub fn new(iterations: u32) -> LSystemRenderer {
+        LSystemRenderer::new(
+            LSystemDef {
+                axiom: "F",
+                rules: &[('F', "F+G"), ('G', "F-G")],
+                angle: 90.0,
+                initial_heading: 0.0,
+            },
+            iterations,
+            16,
+        )
+    }
+}
+
+pub mod barnsley_fern {
+    use super::{LSystemDef, LSystemRenderer};
+
+    /// Barnsley fern L-system
+    ///
+    /// Axiom: X
+    /// Rules: X → F+[[X]-X]-F[-FX]+X, F → FF
+    /// Angle: 25°
+    ///
+    /// X is a non-drawing symbol used only for expansion.
+    /// [ and ] push/pop the turtle state for branching.
+    pub fn new(iterations: u32) -> LSystemRenderer {
+        LSystemRenderer::new(
+            LSystemDef {
+                axiom: "X",
+                rules: &[('X', "F+[[X]-X]-F[-FX]+X"), ('F', "FF")],
+                angle: 25.0,
+                initial_heading: 90.0, // grow upward
+            },
+            iterations,
+            8,
         )
     }
 }
