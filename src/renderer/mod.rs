@@ -5,6 +5,7 @@ pub mod icon_renderer;
 pub mod julia;
 pub mod mandelbrot;
 pub mod progressive;
+pub mod escape_time;
 
 use skia_safe::{Canvas, Rect};
 use winit::event::WindowEvent;
