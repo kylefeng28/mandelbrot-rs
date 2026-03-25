@@ -1,9 +1,9 @@
 use super::{
     Renderer, iter_to_color,
-    viewer::{self, Draggable, DragState, PanOrZoom},
+    viewer::{self, Draggable, DragState, DragEvent, PanOrZoom},
 };
 use skia_safe::{AlphaType, Canvas, ColorType, Data, ImageInfo, Rect};
-use winit::event::{ElementState, WindowEvent, KeyEvent};
+use winit::event::{ElementState, WindowEvent, KeyEvent, MouseButton};
 use winit::keyboard::Key;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,8 +61,14 @@ pub const PRESETS: [(f64, f64); 6] = [
     (-0.54, 0.54),       // Branching tendrils
 ];
 
+fn log_c(c_re: f64, c_im: f64) {
+    println!("Using (c_re, c_im) = ({}, {})", c_re, c_im);
+}
+
 impl JuliaRenderer {
     pub fn new(c_re: f64, c_im: f64) -> Self {
+        log_c(c_re, c_im);
+
         Self {
             c_re,
             c_im,
@@ -169,6 +175,13 @@ impl JuliaRenderer {
             buffer.write().unwrap().done = true;
         });
     }
+
+    fn set_c(&mut self, c_re: f64, c_im: f64) {
+        self.c_re = c_re;
+        self.c_im = c_im;
+        log_c(self.c_re, self.c_im);
+        self.dirty = true;
+    }
 }
 
 impl Renderer for JuliaRenderer {
@@ -218,7 +231,7 @@ impl Renderer for JuliaRenderer {
     }
 
     fn handle_event(&mut self, event: &WindowEvent) {
-        let action = match event {
+        match event {
             WindowEvent::KeyboardInput { event: key_event, .. } => {
                 if key_event.state != ElementState::Pressed {
                     return;
@@ -234,14 +247,25 @@ impl Renderer for JuliaRenderer {
                     }
                     _ => {}
                 }
+            },
+            _ => {}
+        };
 
-                self.handle_drag_event(event, self.width, self.height, self.scale)
-            }
-            WindowEvent::MouseInput { .. } |
-            WindowEvent::CursorMoved { .. } |
-            WindowEvent::MouseWheel { .. } => {
-                self.handle_drag_event(event, self.width, self.height, self.scale)
-            }
+        let drag_event = self.handle_drag_event(event, self.width, self.height, self.scale);
+
+        // Right-click drag: change c value
+        if let DragEvent::Drag(MouseButton::Right, dx, dy) = drag_event {
+            self.set_c(
+                self.c_re + dx,
+                self.c_im + dy
+            )
+        }
+
+        let action = match drag_event {
+            DragEvent::None => PanOrZoom::None,
+            DragEvent::Move(dx, dy) => PanOrZoom::Pan(dx, dy),
+            DragEvent::Drag(MouseButton::Left, dx, dy) => PanOrZoom::Pan(dx, dy),
+            DragEvent::Zoom(factor) => PanOrZoom::Zoom(factor),
             _ => PanOrZoom::None
         };
 

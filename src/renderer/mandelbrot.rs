@@ -1,6 +1,6 @@
 use super::{
     Renderer, iter_to_color,
-    viewer::{self, Draggable, DragState, PanOrZoom},
+    viewer::{self, Draggable, DragState, DragEvent, PanOrZoom},
 };
 use skia_safe::{AlphaType, Canvas, ColorType, Data, ImageInfo, Rect};
 use winit::event::WindowEvent;
@@ -240,14 +240,12 @@ impl Renderer for MandelbrotRenderer {
     }
 
     fn handle_event(&mut self, event: &WindowEvent) {
-        let action = match event {
-            WindowEvent::KeyboardInput { .. } |
-            WindowEvent::MouseInput { .. } |
-            WindowEvent::CursorMoved { .. } |
-            WindowEvent::MouseWheel { .. } => {
-                self.handle_drag_event(event, self.width, self.height, self.scale)
-            }
-            _ => PanOrZoom::None
+        let drag_event = self.handle_drag_event(event, self.width, self.height, self.scale);
+        let action = match drag_event {
+            DragEvent::None => PanOrZoom::None,
+            DragEvent::Move(dx, dy) => PanOrZoom::Pan(dx, dy),
+            DragEvent::Drag(_, dx, dy) => PanOrZoom::Pan(dx, dy),
+            DragEvent::Zoom(factor) => PanOrZoom::Zoom(factor),
         };
 
         match action {

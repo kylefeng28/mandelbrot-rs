@@ -4,8 +4,16 @@ use winit::keyboard::{Key, NamedKey};
 pub enum DragState {
     None,
     /// State indicating the left mouse button is currently held for dragging
-    /// Holds coordinates of the last processed cursor coordiantes (in pixels)
-    Dragging(f64, f64),
+    /// Holds coordinates of the last processed cursor coordinates (in pixels)
+    Dragging(MouseButton, f64, f64),
+}
+
+#[derive(Debug)]
+pub enum DragEvent {
+    None,
+    Move(f64, f64),
+    Drag(MouseButton, f64, f64),
+    Zoom(f64),
 }
 
 #[derive(Debug)]
@@ -16,43 +24,44 @@ pub enum PanOrZoom {
 }
 
 pub trait Draggable {
-    fn handle_drag_event(&mut self, event: &WindowEvent, width: u32, height: u32, scale: f64) -> PanOrZoom {
+    fn handle_drag_event(&mut self, event: &WindowEvent, width: u32, height: u32, scale: f64) -> DragEvent {
         match event {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed {
-                    return PanOrZoom::None;
+                    return DragEvent::None;
                 }
                 let pan_amount = scale * 0.1;
                 match &event.logical_key {
                     // Pan with arrow keys
-                    Key::Named(NamedKey::ArrowLeft)  => { PanOrZoom::Pan(-pan_amount, 0.0) }
-                    Key::Named(NamedKey::ArrowRight) => { PanOrZoom::Pan( pan_amount, 0.0) }
-                    Key::Named(NamedKey::ArrowUp)    => { PanOrZoom::Pan(0.0,  pan_amount) }
-                    Key::Named(NamedKey::ArrowDown)  => { PanOrZoom::Pan(0.0, -pan_amount) }
+                    Key::Named(NamedKey::ArrowLeft)  => { DragEvent::Move(-pan_amount, 0.0) }
+                    Key::Named(NamedKey::ArrowRight) => { DragEvent::Move( pan_amount, 0.0) }
+                    Key::Named(NamedKey::ArrowUp)    => { DragEvent::Move(0.0,  pan_amount) }
+                    Key::Named(NamedKey::ArrowDown)  => { DragEvent::Move(0.0, -pan_amount) }
 
                     // Zoom with +/-
                     Key::Character(ch) if ch.as_str() == "=" || ch.as_str() == "+" => {
-                        PanOrZoom::Zoom(0.8)
+                        DragEvent::Zoom(0.8)
                     }
                     Key::Character(ch) if ch.as_str() == "-" => {
-                        PanOrZoom::Zoom(1.25)
+                        DragEvent::Zoom(1.25)
                     }
-                    _ => PanOrZoom::None
+                    _ => DragEvent::None
                 }
             }
             // Drag to pan: mouse down starts drag
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput { state, button, .. } => {
                 if *state == ElementState::Pressed {
                     let (cursor_x, cursor_y) = self.get_cursor_pos();
-                    self.set_drag_state(DragState::Dragging(cursor_x, cursor_y));
+                    self.set_drag_state(DragState::Dragging(*button, cursor_x, cursor_y));
                 } else {
                     self.set_drag_state(DragState::None);
                 }
-                PanOrZoom::None
+                DragEvent::None
             }
             // Drag to pan: mouse move while drag_state
             WindowEvent::CursorMoved { position, .. } => {
-                if let DragState::Dragging(drag_x, drag_y) = self.get_drag_state() && width > 0 {
+                // Copy values out of the borrow before mutating self
+                if let &DragState::Dragging(drag_btn, drag_x, drag_y) = self.get_drag_state() && width > 0 {
                     let dx = position.x - drag_x;
                     let dy = position.y - drag_y;
 
@@ -61,12 +70,12 @@ pub trait Draggable {
                     let pixels_per_unit_x = width as f64 / (2.0 * scale * aspect);
                     let pixels_per_unit_y = height as f64 / (2.0 * scale);
 
-                    self.set_drag_state(DragState::Dragging(position.x, position.y));
-                    return PanOrZoom::Pan(-dx / pixels_per_unit_x, dy / pixels_per_unit_y);
+                    self.set_drag_state(DragState::Dragging(drag_btn, position.x, position.y));
+                    return DragEvent::Drag(drag_btn, -dx / pixels_per_unit_x, dy / pixels_per_unit_y);
                 }
 
                 self.set_cursor_pos(position.x, position.y);
-                PanOrZoom::None
+                DragEvent::None
             }
             // Scroll to zoom (centered on cursor position)
             WindowEvent::MouseWheel { delta, .. } => {
@@ -76,9 +85,9 @@ pub trait Draggable {
                 };
                 // Zoom factor: scroll up zooms in, scroll down zooms out
                 let factor = if scroll_y > 0.0 { 0.9 } else { 1.0 / 0.9 };
-                PanOrZoom::Zoom(factor)
+                DragEvent::Zoom(factor)
             }
-            _ => PanOrZoom::None
+            _ => DragEvent::None
         }
     }
 
