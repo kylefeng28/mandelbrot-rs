@@ -8,6 +8,7 @@ pub mod mandelbrot;
 pub mod progressive;
 pub mod escape_time;
 pub mod game_of_life;
+pub mod smooth_life;
 
 use skia_safe::{Canvas, Rect};
 use winit::event::WindowEvent;

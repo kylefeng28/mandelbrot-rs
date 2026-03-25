@@ -24,6 +24,7 @@ fn main() {
         "dragon" => { Box::new(renderer::lsystem::dragon::new(12)) }
         "barnsley" | "barnsley_fern" | "fern" => { Box::new(renderer::lsystem::barnsley_fern::new(5)) }
         "life" | "game_of_life" | "gol" => { Box::new(renderer::game_of_life::GameOfLifeRenderer::new()) }
+        "smoothlife" | "smooth" => { Box::new(renderer::smooth_life::SmoothLifeRenderer::new()) }
         _ => panic!("unknown renderer {name}")
     };
 
