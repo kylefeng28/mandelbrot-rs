@@ -1,5 +1,5 @@
 use super::Renderer;
-use skia_safe::{Canvas, Color, Paint, Rect};
+use skia_safe::{AlphaType, Canvas, ColorType, Data, ImageInfo, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -161,6 +161,8 @@ impl Renderer for MandelbrotRenderer {
         // Read the shared buffer and draw whatever's been computed so far
         let buf = self.buffer.read().unwrap();
         if buf.width > 0 && buf.height > 0 {
+            /*
+            use skia_safe::{Color, Paint, Rect};
             let mut paint = Paint::default();
             // Draw blocks as rects of N*N pixels
             // TODO: use skia Image::from_raster for better performance
@@ -179,6 +181,21 @@ impl Renderer for MandelbrotRenderer {
                         &paint,
                     );
                 }
+            }
+            */
+
+            // Blit the pixel buffer as a raster image in one draw call
+            let info = ImageInfo::new(
+                (w as i32, h as i32),
+                ColorType::BGRA8888,
+                AlphaType::Premul,
+                None,
+            );
+            let row_bytes = w as usize * 4;
+            let pixel_bytes: &[u8] = bytemuck::cast_slice(&buf.pixels);
+            let data = Data::new_copy(pixel_bytes);
+            if let Some(image) = skia_safe::images::raster_from_data(&info, data, row_bytes) {
+                canvas.draw_image(&image, (bounds.left, bounds.top), None);
             }
         }
 
@@ -257,5 +274,6 @@ fn iter_to_color(iter: u32) -> u32 {
     let r = (9.0 * (1.0 - t) * t * t * t * 255.0) as u32;
     let g = (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u32;
     let b = (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u32;
+    // BGRA8888 byte order: B | G << 8 | R << 16 | A << 24
     0xff_000000 | (r.min(255) << 16) | (g.min(255) << 8) | b.min(255)
 }
