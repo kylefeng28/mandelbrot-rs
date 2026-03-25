@@ -20,6 +20,9 @@ pub trait Renderer {
 
     /// Handler for window events (e.g. key press)
     fn handle_event(&mut self, event: &WindowEvent) {}
+
+    /// Build egui UI for this renderer's settings. Return true if settings changed
+    fn egui_ui(&mut self, _ui: &mut egui::Ui) -> bool { false }
 }
 
 /// Map iteration count to a color (BGRA8888 u32)

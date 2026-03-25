@@ -1,5 +1,6 @@
 /// Adapted from https://github.com/rust-skia/rust-skia/blob/master/skia-safe/examples/gl-window/main.rs
 
+use egui_skia::EguiSkia;
 use crate::renderer::Renderer;
 
 use std::{
@@ -63,6 +64,8 @@ pub struct Application {
     modifiers: Modifiers,
     previous_frame_start: Instant,
     cursor_pos: (f32, f32),
+    egui_state: egui_winit::State,
+    egui: EguiSkia,
 }
 
 impl ApplicationHandler for Application {
@@ -86,6 +89,11 @@ impl ApplicationHandler for Application {
     ) {
         let frame_start = Instant::now();
 
+        // Feed events to egui first
+        let egui_response = self.egui_state.on_window_event(&self.env.window, &event);
+        let egui_wants_pointer = self.egui.egui_ctx.wants_pointer_input();
+        let egui_wants_keyboard = self.egui.egui_ctx.wants_keyboard_input();
+
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -108,12 +116,20 @@ impl ApplicationHandler for Application {
                 self.renderer.resize(width.into(), height.into());
             }
             WindowEvent::ModifiersChanged(new_modifiers) => self.modifiers = new_modifiers,
+            _ if egui_response.consumed => {
+                // egui consumed this event, request redraw for UI update
+                self.env.window.request_redraw();
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = (position.x as f32, position.y as f32);
-                self.renderer.handle_event(&event);
+                if !egui_wants_pointer {
+                    self.renderer.handle_event(&event);
+                }
             }
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
-                self.renderer.handle_event(&event);
+                if !egui_wants_pointer {
+                    self.renderer.handle_event(&event);
+                }
                 self.env.window.request_redraw();
             }
             WindowEvent::KeyboardInput {
@@ -123,7 +139,9 @@ impl ApplicationHandler for Application {
                 if self.modifiers.state().super_key() && logical_key == "q" {
                     event_loop.exit();
                 }
-                self.renderer.handle_event(&event);
+                if !egui_wants_keyboard {
+                    self.renderer.handle_event(&event);
+                }
                 self.env.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -153,6 +171,17 @@ impl Application {
         let size = self.env.window.inner_size();
         let bounds = skia_safe::Rect::from_wh(size.width as f32, size.height as f32);
         self.renderer.render(canvas, bounds);
+
+        // Run egui
+        let raw_input = self.egui_state.take_egui_input(&self.env.window);
+        self.egui.run(raw_input, |ctx| {
+            egui::Window::new("Settings").show(ctx, |ui| {
+                self.renderer.egui_ui(ui);
+            });
+        });
+
+        self.egui.paint(canvas);
+
         self.env.gr_context.flush_and_submit();
         self.env
             .gl_surface
@@ -311,6 +340,17 @@ pub fn create_application(el: &EventLoop<()>, renderer: Box<dyn Renderer>) -> Ap
         window,
     };
 
+    let egui_ctx = egui::Context::default();
+    let dpi = env.window.scale_factor() as f32;
+    let egui_state = egui_winit::State::new(
+        egui_ctx.clone(),
+        egui::ViewportId::ROOT,
+        &env.window,
+        Some(dpi),
+        None,
+        None,
+    );
+
     Application {
         env,
         renderer,
@@ -320,5 +360,7 @@ pub fn create_application(el: &EventLoop<()>, renderer: Box<dyn Renderer>) -> Ap
         modifiers: Modifiers::default(),
         previous_frame_start: Instant::now(),
         cursor_pos: (0.0, 0.0),
+        egui_state,
+        egui: EguiSkia::new(dpi),
     }
 }

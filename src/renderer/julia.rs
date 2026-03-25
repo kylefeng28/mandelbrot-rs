@@ -115,6 +115,35 @@ impl Renderer for JuliaRenderer {
         };
         self.renderer.handle_drag_action(&action);
     }
+
+    fn egui_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+
+        ui.label("Julia Set");
+        ui.separator();
+
+        // c_re and c_im sliders
+        let mut c_re = self.c_re;
+        let mut c_im = self.c_im;
+        changed |= ui.add(egui::Slider::new(&mut c_re, -2.0..=2.0).text("c_re")).changed();
+        changed |= ui.add(egui::Slider::new(&mut c_im, -2.0..=2.0).text("c_im")).changed();
+        if changed {
+            self.set_c(c_re, c_im);
+        }
+
+        // Preset buttons
+        ui.separator();
+        ui.label("Presets");
+        for (i, (re, im)) in PRESETS.iter().enumerate() {
+            if ui.button(format!("({re:.3}, {im:.3})")).clicked() {
+                self.preset_index = i;
+                self.set_c(*re, *im);
+                changed = true;
+            }
+        }
+
+        changed
+    }
 }
 
 struct JuliaCompute {
