@@ -23,6 +23,7 @@ fn main() {
         "sierpinski" => { Box::new(renderer::lsystem::sierpinski::new(5)) }
         "dragon" => { Box::new(renderer::lsystem::dragon::new(12)) }
         "barnsley" | "barnsley_fern" | "fern" => { Box::new(renderer::lsystem::barnsley_fern::new(5)) }
+        "life" | "game_of_life" | "gol" => { Box::new(renderer::game_of_life::GameOfLifeRenderer::new()) }
         _ => panic!("unknown renderer {name}")
     };
 
